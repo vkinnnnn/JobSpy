@@ -14,6 +14,11 @@ from jobspy.linkedin import LinkedIn
 from jobspy.naukri import Naukri
 from jobspy.model import JobType, Location, JobResponse, Country
 from jobspy.model import SalarySource, ScraperInput, Site
+from jobspy.target_roles import (
+    TARGET_ROLES,
+    TARGET_ROLES_BY_CATEGORY,
+    get_target_roles,
+)
 from jobspy.util import (
     set_logger_level,
     extract_salary,
@@ -221,7 +226,57 @@ def scrape_jobs(
         return pd.DataFrame()
 
 
-# Add BDJobs to __all__
+def scrape_target_roles(
+    roles: list[str] | None = None,
+    category: str | None = None,
+    *,
+    dedupe: bool = True,
+    **kwargs,
+) -> pd.DataFrame:
+    """Scrape jobs for each of the curated target roles and combine the results.
+
+    This is a convenience wrapper around :func:`scrape_jobs` that runs one
+    search per role (using the role as the ``search_term``) and stacks every
+    result into a single DataFrame with an added ``search_role`` column so you
+    can tell which target role surfaced each posting.
+
+    :param roles: explicit list of roles to search for. Defaults to the roles
+        from :data:`jobspy.target_roles.TARGET_ROLES` (or a single ``category``).
+    :param category: when ``roles`` is not given, limit the search to one
+        category from :data:`jobspy.target_roles.TARGET_ROLES_BY_CATEGORY`.
+    :param dedupe: drop duplicate postings (by ``job_url``) that show up under
+        more than one role. Defaults to ``True``.
+    :param kwargs: any other keyword argument accepted by :func:`scrape_jobs`
+        (e.g. ``site_name``, ``location``, ``results_wanted``, ``hours_old``).
+        A ``search_term`` passed here is ignored since it is set per role.
+    :return: a combined :class:`pandas.DataFrame`, empty if nothing was found.
+    """
+    if roles is None:
+        roles = get_target_roles(category)
+    # search_term is driven by each role, so ignore any caller-supplied value.
+    kwargs.pop("search_term", None)
+
+    frames: list[pd.DataFrame] = []
+    for role in roles:
+        role_df = scrape_jobs(search_term=role, **kwargs)
+        if not role_df.empty:
+            role_df.insert(0, "search_role", role)
+            frames.append(role_df)
+
+    if not frames:
+        return pd.DataFrame()
+
+    combined = pd.concat(frames, ignore_index=True)
+    if dedupe and "job_url" in combined.columns:
+        combined = combined.drop_duplicates(subset="job_url").reset_index(drop=True)
+    return combined
+
+
 __all__ = [
+    "scrape_jobs",
+    "scrape_target_roles",
+    "TARGET_ROLES",
+    "TARGET_ROLES_BY_CATEGORY",
+    "get_target_roles",
     "BDJobs",
 ]
