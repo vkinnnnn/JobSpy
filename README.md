@@ -41,6 +41,39 @@ print(jobs.head())
 jobs.to_csv("jobs.csv", quoting=csv.QUOTE_NONNUMERIC, escapechar="\\", index=False) # to_excel
 ```
 
+### Target roles
+
+JobSpy ships with a curated, de-duplicated list of AI / ML / data / software
+**target roles**. Use `scrape_target_roles()` to run one search per role and get
+back a single DataFrame with an added `search_role` column telling you which
+role surfaced each posting.
+
+```python
+from jobspy import scrape_target_roles, TARGET_ROLES, TARGET_ROLES_BY_CATEGORY
+
+# Scrape every target role (accepts all the same kwargs as scrape_jobs)
+jobs = scrape_target_roles(
+    site_name=["indeed", "linkedin"],
+    location="San Francisco, CA",
+    results_wanted=15,
+    hours_old=72,
+    country_indeed="USA",
+)
+
+# Or just one category, e.g. only data-science roles
+ds_jobs = scrape_target_roles(category="data_science", location="Remote")
+
+# Or your own subset of roles
+some_jobs = scrape_target_roles(roles=["AI Engineer", "ML Engineer"])
+
+print(TARGET_ROLES)                 # flat list of all target roles
+print(TARGET_ROLES_BY_CATEGORY)     # roles grouped by category
+```
+
+Available categories: `ai_ml_engineering`, `mlops_platform_infra`,
+`software_engineering`, `data_analytics`, `data_science`, `data_engineering`,
+`ai_product_governance`.
+
 ### Output
 
 ```

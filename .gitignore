@@ -8,3 +8,8 @@
 *.pyc
 .env
 dist
+
+# Job-scrape routine artifacts
+target_roles_jobs_*.xlsx
+~$*.xlsx
+.venv/
