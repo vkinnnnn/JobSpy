@@ -24,6 +24,8 @@ covers those as an aggregator.
 from __future__ import annotations
 
 import argparse
+import glob
+import os
 import re
 import sys
 import warnings
@@ -33,6 +35,17 @@ import pandas as pd
 
 from jobspy import scrape_jobs, TARGET_ROLES
 from jobspy.util import create_logger, desired_order
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import digest  # noqa: E402  (local module, same dir)
+
+# Digest columns shown first, daily_digest-style (priority + outreach fields).
+DIGEST_FRONT = [
+    "composite_score", "score_source", "resume_matched", "resume_variant",
+    "match_score", "company", "title", "location", "job_url", "date_posted",
+    "days_listed", "min_years_required", "auth_type", "opt_friendly_signal",
+    "matching_skills", "missing_skills", "reason", "description", "matched_roles",
+]
 
 # Concatenating per-role frames with differing all-NA columns is just noisy here.
 warnings.simplefilter("ignore", FutureWarning)
@@ -220,14 +233,22 @@ def combine(frames: list[pd.DataFrame]) -> pd.DataFrame:
     # On-target flag: does the posting *title* match a target-role signal?
     combined["title_relevant"] = combined.get("title").apply(title_is_relevant)
 
-    # Order columns: context first, then native fields, then anything leftover.
-    front = EXTRA_COLS + [c for c in desired_order if c in combined.columns]
+    # Deterministic digest enrichment (score, skills gap, auth, resume_variant).
+    combined = digest.enrich(combined)
+
+    # Order columns: digest/priority first, then remaining native fields.
+    front = [c for c in DIGEST_FRONT if c in combined.columns]
+    front += [c for c in EXTRA_COLS if c in combined.columns and c not in front]
+    front += [c for c in desired_order if c in combined.columns and c not in front]
     rest = [c for c in combined.columns if c not in front]
     combined = combined[front + rest]
 
-    return combined.sort_values(
-        by=["date_posted", "matched_roles"], ascending=[False, True], na_position="last"
-    ).reset_index(drop=True)
+    combined = combined.sort_values(
+        by=["composite_score", "date_posted"], ascending=[False, False], na_position="last"
+    )
+    # Collapse duplicate postings of the same role at the same company (keep best-scored).
+    combined = combined.drop_duplicates(subset=["company", "title"], keep="first")
+    return combined.reset_index(drop=True)
 
 
 def write_excel(combined: pd.DataFrame, failures: list, meta: dict, out_path: str):
@@ -238,6 +259,13 @@ def write_excel(combined: pd.DataFrame, failures: list, meta: dict, out_path: st
         raw_all[raw_all["title_relevant"] == True]  # noqa: E712
         if "title_relevant" in raw_all
         else raw_all
+    )
+
+    # Top 100 priority: highest composite_score among on-target jobs.
+    top100 = (
+        on_target.sort_values("composite_score", ascending=False).head(100)
+        if "composite_score" in on_target and not on_target.empty
+        else pd.DataFrame()
     )
 
     last_24h = (
@@ -275,6 +303,9 @@ def write_excel(combined: pd.DataFrame, failures: list, meta: dict, out_path: st
     )
 
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+        (top100 if not top100.empty else pd.DataFrame([{"info": "no jobs"}])).to_excel(
+            writer, sheet_name="Top 100", index=False
+        )
         (on_target if not on_target.empty else pd.DataFrame([{"info": "no jobs"}])).to_excel(
             writer, sheet_name="All Jobs", index=False
         )
@@ -298,11 +329,24 @@ def write_excel(combined: pd.DataFrame, failures: list, meta: dict, out_path: st
         )
 
         # Freeze header + add autofilter on the browsable sheets.
-        for sheet in ("All Jobs", "Last 24h", "Remote", "Raw (all)"):
+        for sheet in ("Top 100", "All Jobs", "Last 24h", "Remote", "Raw (all)"):
             ws = writer.sheets[sheet]
             ws.freeze_panes = "A2"
             if ws.max_row > 1:
                 ws.auto_filter.ref = ws.dimensions
+
+
+def next_apply_list_path(out_dir: str) -> str:
+    """`<out_dir>/<YYYY-MM-DD>_Apply List no.<N>.xlsx`, N incrementing per day."""
+    os.makedirs(out_dir, exist_ok=True)
+    today = date.today().strftime("%Y-%m-%d")
+    nums = []
+    for f in glob.glob(os.path.join(out_dir, f"{today}_Apply List no.*.xlsx")):
+        m = re.search(r"no\.(\d+)\.xlsx$", os.path.basename(f))
+        if m:
+            nums.append(int(m.group(1)))
+    n = (max(nums) + 1) if nums else 1
+    return os.path.join(out_dir, f"{today}_Apply List no.{n}.xlsx")
 
 
 def parse_args(argv):
@@ -316,14 +360,15 @@ def parse_args(argv):
         action="store_true",
         help="fetch full LinkedIn descriptions (much slower, rate-limits fast)",
     )
-    p.add_argument("--out", default=None)
+    p.add_argument("--out", default=None, help="explicit output path (overrides naming)")
+    p.add_argument("--out-dir", default=".", help="dir for auto-named 'Apply List no.N' files")
     return p.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv or sys.argv[1:])
     roles = TARGET_ROLES[: args.limit_roles] if args.limit_roles else TARGET_ROLES
-    out_path = args.out or f"target_roles_jobs_{date.today():%Y%m%d}.xlsx"
+    out_path = args.out or next_apply_list_path(args.out_dir)
 
     started = datetime.now()
     log.info(

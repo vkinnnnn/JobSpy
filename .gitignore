@@ -11,5 +11,8 @@ dist
 
 # Job-scrape routine artifacts
 target_roles_jobs_*.xlsx
+*Apply List*.xlsx
 ~$*.xlsx
 .venv/
+applications/
+resume_brain/
